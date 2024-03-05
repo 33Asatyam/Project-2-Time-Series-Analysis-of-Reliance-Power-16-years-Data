@@ -1,0 +1,178 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code.
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*.
+
+```{r}
+# Required Packages
+packages = c('quantmod') 
+library(quantmod)
+
+# Install all Packages with Dependencies
+install.packages(packages, dependencies = TRUE) 
+
+# Load all Packages
+lapply(packages, require, character.only = TRUE) 
+
+# 0.1. Fetch Single Gold Commodity Stock/Index Data
+getSymbols(Symbols = 'RPOWER.NS', 
+           src = 'yahoo', 
+           from = as.Date('2008-03-01'), 
+           to = as.Date('2024-01-31'),
+           periodicity = 'daily')
+
+
+nse_Rpower_price <- na.omit(`RPOWER.NS`$`RPOWER.NS.Adjusted`) # Adjusted Closing Price
+class(nse_Rpower_price) # xts (Time-Series) Object
+plot(nse_Rpower_price)
+
+
+```
+
+```{r}
+#===============================================================================================
+# Step 1 : Check for (Weak) Stationarity :: Augmented Dickey-Fuller (ADF) Test
+# Required Packages
+packages = c('tseries', 'forecast') 
+
+# Install all Packages with Dependencies
+install.packages(packages, dependencies = TRUE) 
+
+# Load all Packages
+lapply(packages, require, character.only = TRUE) 
+
+
+# Augmented Dickey-Fuller (ADF) Test for Stationarity with Stock Data
+# *******************************************************************
+
+adf_test_rp = adf.test(nse_Rpower_price); adf_test_rp # Inference : RP Time-Series is Non-Stationary
+
+rp_ds = diff(nse_Rpower_price); plot(rp_ds) # RP (First) Difference Time-Series
+
+# Remove NA values from rp_ds
+rp_ds_clean <- na.omit(rp_ds)
+
+adf_test_rp_ds = adf.test(rp_ds_clean); adf_test_rp_ds # Inference : RP Difference Time-Series is Stationary
+plot(rp_ds_clean)
+```
+
+```{r}
+# Step 2 : Check for Autocorrelation :: Ljung-Box Test 
+
+# Ljung-Box Test for Autocorrelation - RELIANCE POWER Data
+# ***********************************************
+
+lb_test_rp_ds = Box.test(rp_ds_clean,lag = 10,type ="Ljung-Box" ); lb_test_rp_ds # Inference : RP Difference (Stationary) Time-Series is Autocorrelated
+
+```
+
+```{r}
+#===============================================================================================
+# Step 3 : Model for Autocorrelation :: ARIMA Models
+# Autocorrelation Function (ACF) | Partial Autocorrelation Function (PACF)
+# *****************************************************************************
+
+acf(nse_Rpower_price) # ACF of RP Series
+pacf(nse_Rpower_price) # PACF of RP Series
+
+acf(rp_ds_clean) # ACF of RP Difference (Stationary) Series
+pacf(rp_ds_clean) # PACF of RP Difference (Stationary) Series
+
+# Auto ARIMA
+arma_pq_rp = auto.arima(nse_Rpower_price); arma_pq_rp
+arma_pq_rp_ds = auto.arima(rp_ds_clean); arma_pq_rp_ds
+
+# Ljung-Box Test for Autocorrelation - Model Residuals
+# ****************************************************
+lb_test_arma_pq_rp_ds = Box.test(arma_pq_rp_ds$residuals); lb_test_arma_pq_rp_ds
+
+# 3.1.2. Forecasting with ARIMA Models
+# ************************************
+rp_ds_fpq = forecast(arma_pq_rp_ds, h = 40)
+plot(rp_ds_fpq)
+
+rp_fpq = forecast(arma_pq_rp, h = 40)
+plot(rp_fpq)
+```
+
+```{r}
+#==================================================================================================
+# Step 4 : Check for Heteroskedasticity :: ARCH LM Test
+# Required Library/Package : FinTS, rugarch
+# ****************************************
+
+# FinTS : Used for Test for ARCH Test
+# rugarch : Univariate GARCH Models | Used for GARCH Modeling
+
+# Required Packages
+packages = c('FinTS', 'rugarch') 
+
+# Install all Packages with Dependencies
+install.packages(packages, dependencies = TRUE) 
+
+# Load all Packages
+lapply(packages, require, character.only = TRUE) 
+
+rp_ret = na.omit(diff(log(nse_Rpower_price))) # NIFTY Returns
+plot(rp_ret)
+
+# Test for Volatility Clustering or Heteroskedasticity: Box Test 
+rp_ret_sq = rp_ret^2 # Return Variance (Since Mean Returns is approx. 0)
+plot(rp_ret_sq)
+
+# Test for Volatility Clustering or Heteroskedasticity: ARCH Test
+rp_ret_arch_test = ArchTest(rp_ret, lags = 20) # H0: No ARCH Effects
+rp_ret_arch_test # Inference : Return Series is Heteroskedastic (Has Volatility Clustering)
+
+
+```
+
+```{r}
+arma_pq_rp_ds_residuals_squared<-arma_pq_rp_ds$residuals^2
+acf(arma_pq_rp_ds_residuals_squared) # ACF of RP Series
+pacf(arma_pq_rp_ds_residuals_squared)
+arma_pq_rp = auto.arima(arma_pq_rp_ds_residuals_squared); arma_pq_rp
+
+# GARCH Model
+garch_model1 = ugarchspec(variance.model = list(model = 'sGARCH', garchOrder = c(5,1)), mean.model = list(armaOrder = c(5,2), include.mean = TRUE))
+rp_ret_garch1 = ugarchfit(garch_model1, data = arma_pq_rp_ds$residuals); rp_ret_garch1
+
+residuals_rp_ret_garch1 <- residuals(rp_ret_garch1)
+
+#test for autocorrelation in residual2 of garch1
+lb_test_rp_ret_garch1 = Box.test(residuals_rp_ret_garch1); lb_test_rp_ret_garch1
+
+# Test for Volatility Clustering or Heteroskedasticity: ARCH Test
+rp_ret_garch1_arch_test = ArchTest(residuals_rp_ret_garch1, lags = 20) # H0: No ARCH Effects
+rp_ret_garch1_arch_test # Inference : Return Series is Heteroskedastic (Has Volatility Clustering)
+
+
+
+garch_model2 = ugarchspec(variance.model = list(model = 'sGARCH', garchOrder = c(1,1)), mean.model = list(armaOrder = c(5,2), include.mean = FALSE))
+rp_ret_garch2 = ugarchfit(garch_model2, data = arma_pq_rp_ds$residuals); rp_ret_garch2
+residuals_rp_ret_garch2 <- residuals(rp_ret_garch2)
+#test for autocorrelation in residual2 of garch1
+lb_test_rp_ret_garch1 = Box.test(residuals_rp_ret_garch2); lb_test_rp_ret_garch1
+
+# Test for Volatility Clustering or Heteroskedasticity: ARCH Test
+rp_ret_garch1_arch_test = ArchTest(residuals_rp_ret_garch2, lags = 20) # H0: No ARCH Effects
+rp_ret_garch1_arch_test # Inference : Return Series is Heteroskedastic (Has Volatility Clustering)
+
+```
+
+```{r}
+# GARCH Forecast
+rp_ret_garch_forecast1 = ugarchforecast(rp_ret_garch1, n.ahead = 20); rp_ret_garch_forecast1
+rp_ret_garch_forecast2 = ugarchforecast(rp_ret_garch2, n.ahead = 20); rp_ret_garch_forecast2
+
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
